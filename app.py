@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore")
 #  EPHEMERIS URL  ← set to your raw GitHub CSV
 # ══════════════════════════════════════════════════════════════════════════════
 EPHEMERIS_URL = (
-    "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/"
+    "https://raw.githubusercontent.com/goncuahm/kozmiknatal/"
     "main/planet_degrees.csv"
 )
 
