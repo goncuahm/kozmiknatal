@@ -1,13 +1,10 @@
 """
-Planetary Regression — NATAL ASPECTS Edition
-=============================================
+Planetary Regression — NATAL ASPECTS Edition (OLS Only)
+========================================================
 Y  : Log(price level)
-X  : constant + time trend + transit-to-natal aspect dummies (OLS)
-     + ANN on detrended residuals
+X  : constant + time trend + transit-to-natal aspect dummies
 
-Models
-  1. OLS  : log_price ~ const + trend + aspect_dummies
-  2. ANN  : (trend-residuals) ~ aspect_dummies  → combined with trend
+Model: OLS  → log_price ~ const + trend + aspect_dummies
 
 Ephemeris is loaded from GitHub (set EPHEMERIS_URL below).
 """
@@ -26,9 +23,7 @@ import yfinance as yf
 import statsmodels.api as sm
 import streamlit as st
 
-from sklearn.neural_network  import MLPRegressor
-from sklearn.preprocessing   import StandardScaler
-from sklearn.metrics         import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 warnings.filterwarnings("ignore")
 
@@ -47,7 +42,6 @@ TEAL   = "#00D4B4"
 WHITE  = "#E8E8F4"
 GREY   = "#2A2A4A"
 ORANGE = "#FF8844"
-PURPLE = "#CC44FF"
 
 # ── Planet universe ───────────────────────────────────────────────────────────
 ALL_PLANETS = [
@@ -62,20 +56,15 @@ SIGNS     = [
     "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces",
 ]
 
-# ── ANN architecture ─────────────────────────────────────────────────────────
-ANN_LAYERS = (512, 32)
-TRAIN_FRAC = 0.85
-
 # ── Defaults for Silver (SI=F) ────────────────────────────────────────────────
 DEFAULT_TICKER      = "SI=F"
 DEFAULT_NAME        = "Silver Futures"
 DEFAULT_NATAL_DATE  = "1933-07-05"
-DEFAULT_STOCK_START = "1987-01-01"
 DEFAULT_ORB_APPLY   = 4.0
 DEFAULT_ORB_SEP     = 1.0
-# Default ASC: Leo 29° = 4*30+29 = 149°
-DEFAULT_ASC_DEG     = float(4 * 30 + 29)   # 149.0
-DEFAULT_MC_DEG      = None                  # not used for silver
+DEFAULT_ASC_DEG     = float(4 * 30 + 29)   # Leo 29° = 149.0°
+DEFAULT_MC_DEG      = None
+TRAIN_FRAC          = 0.85
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -164,19 +153,13 @@ def angle_sign_str(lon):
     return f"{sign} {deg:02d}°  ({lon:.1f}°)"
 
 def add_ct(X_asp, trend_vec):
-    """Prepend constant and trend columns."""
     const = np.ones((len(trend_vec), 1))
     trend = trend_vec.reshape(-1, 1)
     return np.hstack([const, trend, X_asp])
 
 
-# ── Build feature matrix (transit → natal) ────────────────────────────────────
+# ── Feature matrix (transit → natal) ─────────────────────────────────────────
 def build_features(date_index, eph, natal_targets, orb_apply, orb_sep):
-    """
-    natal_targets : dict  {label: longitude}
-                    e.g. {'sun': 120.3, 'moon': 45.7, 'asc': 149.0}
-    Returns DataFrame of binary aspect dummies.
-    """
     eph_al   = eph.reindex(date_index, method="ffill")
     avail_tp = [p for p in ALL_PLANETS if p in eph_al.columns]
 
@@ -192,10 +175,10 @@ def build_features(date_index, eph, natal_targets, orb_apply, orb_sep):
                 applying   = (((motion > 0) & (gap < 0)) |
                               ((motion < 0) & (gap > 0)))
                 separating = ~applying
-                key_a = f"{tp}__{nlabel}__{asp}__apply"
-                key_s = f"{tp}__{nlabel}__{asp}__sep"
-                feat_cols[key_a] = (applying   & (abs_gap <= orb_apply)).astype(float)
-                feat_cols[key_s] = (separating & (abs_gap <= orb_sep)).astype(float)
+                feat_cols[f"{tp}__{nlabel}__{asp}__apply"] = (
+                    applying   & (abs_gap <= orb_apply)).astype(float)
+                feat_cols[f"{tp}__{nlabel}__{asp}__sep"] = (
+                    separating & (abs_gap <= orb_sep)).astype(float)
 
     feat_df = pd.DataFrame(feat_cols, index=date_index)
     feat_df = feat_df.loc[:, (feat_df > 0).any(axis=0)]
@@ -239,7 +222,6 @@ with st.sidebar:
     )
     st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
 
-    # ── Stock ─────────────────────────────────────────────────────────────────
     st.markdown("### 📈 Asset Settings")
     ticker = st.text_input("Stock Ticker", value=DEFAULT_TICKER,
                            help="Yahoo Finance ticker, e.g. GC=F, SI=F, AAPL, XU100.IS")
@@ -260,39 +242,31 @@ with st.sidebar:
 
     st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
 
-    # ── Natal / Birth chart ───────────────────────────────────────────────────
     st.markdown("### 🎂 Natal / Birth Chart")
     natal_date_str = st.text_input(
         "Natal Date (YYYY-MM-DD)", value=DEFAULT_NATAL_DATE,
-        help="Birth / listing date of the asset. Planets on this date form the natal chart.",
+        help="Birth / listing date of the asset.",
     )
 
     st.markdown("**Optional Angles** *(leave blank to skip)*")
     asc_input = st.text_input(
         "ASC Longitude (0–360°)", value=str(DEFAULT_ASC_DEG),
-        help="Ascendant degree in absolute longitude. e.g. 149 = Leo 29°. Leave blank to skip.",
+        help="e.g. 149 = Leo 29°. Leave blank to skip.",
     )
     mc_input = st.text_input(
         "MC Longitude (0–360°)", value="",
-        help="Midheaven degree in absolute longitude. Leave blank to skip.",
+        help="Leave blank to skip.",
     )
 
     st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
 
-    # ── Orbs ──────────────────────────────────────────────────────────────────
     st.markdown("### 🔭 Orb Settings")
     orb_apply = st.slider("Applying Orb (°)", 0.5, 10.0, DEFAULT_ORB_APPLY, 0.5)
     orb_sep   = st.slider("Separating Orb (°)", 0.5, 5.0, DEFAULT_ORB_SEP, 0.5)
 
     st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
 
-    # ── ANN ───────────────────────────────────────────────────────────────────
-    st.markdown("### 🧠 ANN Settings")
-    ann_l1 = st.number_input("Layer 1 neurons", min_value=8, max_value=1024,
-                              value=512, step=8)
-    ann_l2 = st.number_input("Layer 2 neurons", min_value=0, max_value=512,
-                              value=32, step=8,
-                              help="Set to 0 for a single hidden layer.")
+    st.markdown("### ⚙️ Model Settings")
     train_frac = st.slider("Train fraction", 0.60, 0.95, TRAIN_FRAC, 0.05)
 
     st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
@@ -309,7 +283,7 @@ st.markdown(
 )
 st.markdown(
     "<p style='text-align:center;color:#888;font-size:14px;letter-spacing:2px'>"
-    "TRANSIT-TO-NATAL ASPECTS · OLS + ANN · LOG PRICE LEVEL</p>",
+    "TRANSIT-TO-NATAL ASPECTS · OLS · LOG PRICE LEVEL</p>",
     unsafe_allow_html=True,
 )
 st.markdown("<hr class='gold'/>", unsafe_allow_html=True)
@@ -326,7 +300,7 @@ if not run_btn:
                 1. Enter asset ticker, display name, and data start date<br>
                 2. Enter the asset natal / birth date<br>
                 3. Optionally set ASC and MC longitudes<br>
-                4. Adjust orb angles and ANN architecture<br>
+                4. Adjust orb angles and train fraction<br>
                 5. Click <strong style='color:#C8A84B'>⚡ Run Analysis</strong>
             </div>
         </div>
@@ -339,33 +313,25 @@ if not run_btn:
 # ══════════════════════════════════════════════════════════════════════════════
 #  PARSE INPUTS
 # ══════════════════════════════════════════════════════════════════════════════
-# Parse natal date
 try:
     natal_date = pd.Timestamp(natal_date_str)
 except Exception:
     st.error(f"Invalid natal date: '{natal_date_str}'. Use YYYY-MM-DD format.")
     st.stop()
 
-# Parse ASC / MC
 natal_angles = {}
 if asc_input.strip():
     try:
         natal_angles["asc"] = float(asc_input.strip()) % 360
     except ValueError:
-        st.warning(f"ASC value '{asc_input}' is not a valid number — skipping ASC.")
+        st.warning(f"ASC value '{asc_input}' is not a valid number — skipping.")
 if mc_input.strip():
     try:
         natal_angles["mc"] = float(mc_input.strip()) % 360
     except ValueError:
-        st.warning(f"MC value '{mc_input}' is not a valid number — skipping MC.")
+        st.warning(f"MC value '{mc_input}' is not a valid number — skipping.")
 
 angle_labels = {"asc": "ASC", "mc": "MC"}
-
-# ANN layers tuple
-ann_layers_list = [ann_l1]
-if ann_l2 > 0:
-    ann_layers_list.append(ann_l2)
-ann_layers = tuple(ann_layers_list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,40 +351,30 @@ with st.spinner("Loading ephemeris from GitHub …"):
     except Exception as e:
         st.error(
             f"Could not load ephemeris.\n\n**Error:** {e}\n\n"
-            f"**URL:** `{EPHEMERIS_URL}`\n\nUpdate `EPHEMERIS_URL` at the top of the script."
+            f"**URL:** `{EPHEMERIS_URL}`"
         )
         st.stop()
 
 # Extract natal chart
 if natal_date not in eph.index:
-    # Try nearest available date
     nearest = eph.index[eph.index.get_indexer([natal_date], method="nearest")[0]]
-    st.warning(
-        f"Natal date {natal_date.date()} not in ephemeris. "
-        f"Using nearest: {nearest.date()}"
-    )
+    st.warning(f"Natal date {natal_date.date()} not in ephemeris. Using nearest: {nearest.date()}")
     natal_date = nearest
 
-natal_row    = eph.loc[natal_date]
-natal_planets = {}
-for p in ALL_PLANETS:
-    if p in natal_row.index:
-        natal_planets[p] = float(natal_row[p]) % 360
-
-# Merge angles into natal targets
+natal_row     = eph.loc[natal_date]
+natal_planets = {p: float(natal_row[p]) % 360 for p in ALL_PLANETS if p in natal_row.index}
 natal_targets = dict(natal_planets)
-natal_targets.update(natal_angles)   # 'asc' / 'mc' added if present
+natal_targets.update(natal_angles)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SHOW NATAL CHART
+#  NATAL CHART DISPLAY
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.markdown("<h2>🎂 Natal Chart</h2>", unsafe_allow_html=True)
 
 natal_cols = st.columns(4)
-planet_items = list(natal_planets.items())
-for i, (p, lon) in enumerate(planet_items):
+for i, (p, lon) in enumerate(natal_planets.items()):
     sign = SIGNS[int(lon // 30)]
     deg  = int(lon % 30)
     natal_cols[i % 4].markdown(
@@ -488,7 +444,7 @@ with st.spinner("Building transit-to-natal aspect features …"):
 
 st.markdown(
     f"<div class='metric-card'>"
-    f"<span class='metric-label'>Features built (transit→natal)</span><br>"
+    f"<span class='metric-label'>Features built (transit → natal)</span><br>"
     f"<span class='metric-value'>{n_features}</span> "
     f"<span class='metric-sub'>"
     f"{n_apply_cols} applying + {n_sep_cols} separating · "
@@ -514,25 +470,20 @@ trend_all   = np.arange(n_total) / n_total
 trend_train = trend_all[:n_train]
 trend_test  = trend_all[n_train:]
 
-X_train_asp = feat_all.values[:n_train]
-X_test_asp  = feat_all.values[n_train:]
-X_all_asp   = feat_all.values
-
-X_train = add_ct(X_train_asp, trend_train)
-X_test  = add_ct(X_test_asp,  trend_test)
-X_all   = add_ct(X_all_asp,   trend_all)
+X_train = add_ct(feat_all.values[:n_train], trend_train)
+X_test  = add_ct(feat_all.values[n_train:], trend_test)
+X_all   = add_ct(feat_all.values,           trend_all)
 
 col_names = ["const", "trend"] + feature_cols
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODEL 1 — OLS
+#  OLS — TRAIN/TEST FIT
 # ══════════════════════════════════════════════════════════════════════════════
 with st.spinner("Fitting OLS …"):
-    ols_res = sm.OLS(y_train, X_train).fit()
-
-y_fit_ols_train = np.asarray(ols_res.predict(X_train))
-y_fit_ols_test  = np.asarray(ols_res.predict(X_test))
+    ols_res         = sm.OLS(y_train, X_train).fit()
+    y_fit_ols_train = np.asarray(ols_res.predict(X_train))
+    y_fit_ols_test  = np.asarray(ols_res.predict(X_test))
 
 def metrics_dict(y_true, y_pred):
     r2   = r2_score(y_true, y_pred)
@@ -541,80 +492,21 @@ def metrics_dict(y_true, y_pred):
     r    = float(np.corrcoef(y_true, y_pred)[0, 1])
     return dict(r2=r2, rmse=rmse, mae=mae, r=r)
 
-m_ols_train = metrics_dict(y_train, y_fit_ols_train)
-m_ols_test  = metrics_dict(y_test,  y_fit_ols_test)
+m_train = metrics_dict(y_train, y_fit_ols_train)
+m_test  = metrics_dict(y_test,  y_fit_ols_test)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODEL 2 — ANN on detrended residuals
+#  OLS — REFIT ON FULL SAMPLE FOR FORECAST
 # ══════════════════════════════════════════════════════════════════════════════
-with st.spinner(f"Fitting ANN {ann_layers} on detrended residuals …"):
-    X_trend_train = X_train[:, :2]
-    X_trend_test  = X_test[:, :2]
-    X_trend_all   = X_all[:, :2]
-
-    ols_trend       = sm.OLS(y_train, X_trend_train).fit()
-    trend_fit_train = np.asarray(ols_trend.predict(X_trend_train))
-    trend_fit_test  = np.asarray(ols_trend.predict(X_trend_test))
-    trend_fit_all   = np.asarray(ols_trend.predict(X_trend_all))
-
-    resid_train = y_train - trend_fit_train
-
-    sc_resid        = StandardScaler()
-    X_asp_tr_sc     = sc_resid.fit_transform(X_train[:, 2:])
-    X_asp_te_sc     = sc_resid.transform(X_test[:, 2:])
-
-    ann = MLPRegressor(
-        hidden_layer_sizes=ann_layers,
-        activation="relu", solver="adam", alpha=0.01,
-        learning_rate="adaptive", learning_rate_init=0.001,
-        max_iter=9000, early_stopping=True,
-        validation_fraction=0.15, n_iter_no_change=50,
-        random_state=42, verbose=False,
-    )
-    ann.fit(X_asp_tr_sc, resid_train)
-
-resid_pred_train = ann.predict(X_asp_tr_sc)
-resid_pred_test  = ann.predict(X_asp_te_sc)
-y_fit_ann_train  = trend_fit_train + resid_pred_train
-y_fit_ann_test   = trend_fit_test  + resid_pred_test
-
-m_ann_train = metrics_dict(y_train, y_fit_ann_train)
-m_ann_test  = metrics_dict(y_test,  y_fit_ann_test)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  REFIT FULL SAMPLE
-# ══════════════════════════════════════════════════════════════════════════════
-with st.spinner("Refitting on full sample for forecast …"):
+with st.spinner("Refitting OLS on full sample …"):
     ols_full       = sm.OLS(y_all, X_all).fit()
     y_fit_ols_full = np.asarray(ols_full.fittedvalues)
 
-    ols_trend_full     = sm.OLS(y_all, X_trend_all).fit()
-    trend_fit_all_full = np.asarray(ols_trend_full.predict(X_trend_all))
-    resid_all          = y_all - trend_fit_all_full
-
-    sc_resid_full   = StandardScaler()
-    X_asp_all_sc    = sc_resid_full.fit_transform(X_all[:, 2:])
-
-    ann_full = MLPRegressor(
-        hidden_layer_sizes=ann_layers,
-        activation="relu", solver="adam", alpha=0.01,
-        learning_rate="adaptive", learning_rate_init=0.001,
-        max_iter=5000, early_stopping=True,
-        validation_fraction=0.15, n_iter_no_change=50,
-        random_state=42, verbose=False,
-    )
-    ann_full.fit(X_asp_all_sc, resid_all)
-
-resid_pred_all = ann_full.predict(X_asp_all_sc)
-y_fit_ann_full = trend_fit_all_full + resid_pred_all
-
 fit_ols_all  = np.exp(y_fit_ols_full)
-fit_ann_all  = np.exp(y_fit_ann_full)
 last_fit_ols = float(fit_ols_all[-1])
-last_fit_ann = float(fit_ann_all[-1])
 last_actual  = float(close_all[-1])
+ols_full_r2  = r2_score(y_all, y_fit_ols_full)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -637,15 +529,6 @@ with st.spinner("Building forecast …"):
     y_fore_ols   = np.asarray(ols_full.predict(X_fut))
     fore_ols_idx = np.exp(y_fore_ols)
 
-    trend_fore   = np.asarray(ols_trend_full.predict(X_fut[:, :2]))
-    X_fut_asp_sc = sc_resid_full.transform(X_fut[:, 2:])
-    resid_fore   = ann_full.predict(X_fut_asp_sc)
-    y_fore_ann   = trend_fore + resid_fore
-    fore_ann_idx = np.exp(y_fore_ann)
-
-ols_full_r2 = r2_score(y_all, y_fit_ols_full)
-ann_full_r2 = r2_score(y_all, y_fit_ann_full)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  METRICS SUMMARY
@@ -653,34 +536,28 @@ ann_full_r2 = r2_score(y_all, y_fit_ann_full)
 st.markdown("---")
 st.markdown("<h2>📊 Model Performance</h2>", unsafe_allow_html=True)
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.markdown(metric_html("Last Actual",       f"{last_actual:,.4f}",    f"{ticker} · {dates_all[-1].date()}"),       unsafe_allow_html=True)
-c2.markdown(metric_html("OLS Full R²",       f"{ols_full_r2:.4f}",     "Full sample"),                              unsafe_allow_html=True)
-c3.markdown(metric_html("ANN Full R²",       f"{ann_full_r2:.4f}",     "Full sample"),                              unsafe_allow_html=True)
-c4.markdown(metric_html("OLS Test R²",       f"{m_ols_test['r2']:.4f}", f"r={m_ols_test['r']:.4f}"),               unsafe_allow_html=True)
-c5.markdown(metric_html("ANN Test R²",       f"{m_ann_test['r2']:.4f}", f"r={m_ann_test['r']:.4f}"),               unsafe_allow_html=True)
-c6.markdown(metric_html("Features (active)", f"{n_features}",           f"Natal targets: {len(natal_targets)}"),    unsafe_allow_html=True)
+chg_fore = (fore_ols_idx[-1] / last_actual - 1) * 100
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.markdown(metric_html("Last Actual",        f"{last_actual:,.4f}",    f"{ticker} · {dates_all[-1].date()}"),  unsafe_allow_html=True)
+c2.markdown(metric_html("OLS Full R²",        f"{ols_full_r2:.4f}",     "Full sample"),                         unsafe_allow_html=True)
+c3.markdown(metric_html("OLS Train R²",       f"{m_train['r2']:.4f}",   f"r={m_train['r']:.4f}"),              unsafe_allow_html=True)
+c4.markdown(metric_html("OLS Test R²",        f"{m_test['r2']:.4f}",    f"r={m_test['r']:.4f}"),               unsafe_allow_html=True)
+c5.markdown(metric_html("OLS Forecast End",   f"{fore_ols_idx[-1]:,.4f}", f"{chg_fore:+.2f}% vs last actual"), unsafe_allow_html=True)
 
-# Detailed performance table
-perf_data = {
-    "Model":    ["OLS", "OLS", "ANN", "ANN"],
-    "Split":    ["Train", "Test", "Train", "Test"],
-    "R²":       [m_ols_train["r2"],  m_ols_test["r2"],
-                 m_ann_train["r2"],  m_ann_test["r2"]],
-    "Pearson r":[m_ols_train["r"],   m_ols_test["r"],
-                 m_ann_train["r"],   m_ann_test["r"]],
-    "RMSE":     [m_ols_train["rmse"],m_ols_test["rmse"],
-                 m_ann_train["rmse"],m_ann_test["rmse"]],
-    "MAE":      [m_ols_train["mae"], m_ols_test["mae"],
-                 m_ann_train["mae"], m_ann_test["mae"]],
-}
-perf_df = pd.DataFrame(perf_data)
+# Performance table
+perf_df = pd.DataFrame({
+    "Split":    ["Train", "Test"],
+    "R²":       [m_train["r2"],   m_test["r2"]],
+    "Pearson r":[m_train["r"],    m_test["r"]],
+    "RMSE":     [m_train["rmse"], m_test["rmse"]],
+    "MAE":      [m_train["mae"],  m_test["mae"]],
+    "N days":   [n_train,         n_total - n_train],
+})
 
 def style_perf(df):
     def row_style(row):
-        col = ORANGE if row["Model"] == "OLS" else "#BB33FF"
-        bg  = "#0d0d28"
-        return [f"color:{col};background-color:{bg}"] * len(row)
+        bg = "#0d0d28"
+        return [f"color:{ORANGE};background-color:{bg}"] * len(row)
     return df.style.apply(row_style, axis=1).format({
         "R²": "{:.4f}", "Pearson r": "{:.4f}", "RMSE": "{:.6f}", "MAE": "{:.6f}"
     })
@@ -696,40 +573,26 @@ st.markdown("<h2>📅 Next 3 Trading Days Forecast</h2>", unsafe_allow_html=True
 
 cols3 = st.columns(3)
 for k in range(min(3, n_fut)):
-    ols_lvl  = fore_ols_idx[k]
-    ann_lvl  = fore_ann_idx[k]
-    ols_vs   = ols_lvl - last_fit_ols
-    ann_vs   = ann_lvl - last_fit_ann
-    ols_pct  = (ols_lvl / last_fit_ols - 1) * 100
-    ann_pct  = (ann_lvl / last_fit_ann - 1) * 100
-    ols_dir  = "▲ UP" if ols_vs > 0 else "▼ DOWN"
-    ann_dir  = "▲ UP" if ann_vs > 0 else "▼ DOWN"
-    o_cls    = "up-signal" if ols_vs > 0 else "down-signal"
-    a_cls    = "up-signal" if ann_vs > 0 else "down-signal"
-    cons     = "CONSENSUS" if ols_dir == ann_dir else "SPLIT"
-    cons_c   = "#44DD88" if cons == "CONSENSUS" else "#FF8844"
+    ols_lvl = fore_ols_idx[k]
+    ols_vs  = ols_lvl - last_fit_ols
+    ols_pct = (ols_lvl / last_fit_ols - 1) * 100
+    ols_dir = "▲ UP" if ols_vs > 0 else "▼ DOWN"
+    o_cls   = "up-signal" if ols_vs > 0 else "down-signal"
+    dir_c   = "#44DD88" if ols_vs > 0 else "#FF4466"
     with cols3[k]:
         st.markdown(
             f"""<div class='forecast-box'>
             <div style='color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px'>Day +{k+1}</div>
             <div style='font-family:Cinzel,serif;font-size:14px;color:#C8A84B;margin:4px 0'>{fut_dates[k].strftime('%B %d, %Y')}</div>
-            <div style='font-size:18px;font-weight:700;margin:8px 0'>
-                <span style='color:{cons_c}'>{cons}</span>
+            <div style='font-size:22px;font-weight:700;margin:10px 0'>
+                <span class='{o_cls}'>{ols_dir}</span>
             </div>
             <div style='margin:4px 0'>
                 <span style='color:{ORANGE};font-size:13px'>OLS</span>
-                <span style='color:#888;font-size:11px'> → </span>
-                <span class='{o_cls}'>{ols_dir}</span>
-                <span style='color:#aaa;font-size:11px'> ({ols_pct:+.3f}%)</span>
-            </div>
-            <div style='margin:4px 0'>
-                <span style='color:#CC44FF;font-size:13px'>ANN</span>
-                <span style='color:#888;font-size:11px'> → </span>
-                <span class='{a_cls}'>{ann_dir}</span>
-                <span style='color:#aaa;font-size:11px'> ({ann_pct:+.3f}%)</span>
+                <span style='color:#aaa;font-size:12px'> {ols_pct:+.3f}% vs last fitted</span>
             </div>
             <div style='margin-top:10px;padding-top:8px;border-top:1px solid #2A2A4A;font-size:11px;color:#555'>
-                OLS: {ols_lvl:,.4f} · ANN: {ann_lvl:,.4f}
+                Forecast level: {ols_lvl:,.4f}
             </div>
             </div>""",
             unsafe_allow_html=True,
@@ -738,7 +601,7 @@ for k in range(min(3, n_fut)):
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHART 1 — Last 12M Fitted + 3M Forecast
-#  Fitted lines rebased to actual price at window start for comparable scaling
+#  Fitted line rebased to actual price at window start for comparable scaling
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.markdown("<h2>📈 Chart 1 — Last 12 Months Fitted + 3-Month Forecast</h2>", unsafe_allow_html=True)
@@ -749,32 +612,30 @@ mask_ly         = dates_all >= last_year_start
 dates_ly        = dates_all[mask_ly]
 actual_ly       = close_all[mask_ly]
 
-# Rebase fitted series to actual price at window start
-w_pos = int(np.where(mask_ly)[0][0])
-
-# OLS rebased: cumulate log-fitted increments within window, start at actual_ly[0]
+# Rebase: cumulate log-fitted increments within the 12M window,
+# anchoring the first value to the actual price at window start
+w_pos       = int(np.where(mask_ly)[0][0])
 ols_log_win = y_fit_ols_full[w_pos:]
 ols_fit_ly  = actual_ly[0] * np.exp(np.cumsum(ols_log_win) - ols_log_win[0])
 
-# ANN rebased: same approach
-ann_log_win = y_fit_ann_full[w_pos:]
-ann_fit_ly  = actual_ly[0] * np.exp(np.cumsum(ann_log_win) - ann_log_win[0])
-
 fore_dates_3m = fut_dates[:TRADING_MONTH]
 fore_ols_3m   = fore_ols_idx[:TRADING_MONTH]
-fore_ann_3m   = fore_ann_idx[:TRADING_MONTH]
 
 r_ols_ly    = float(np.corrcoef(y_all[mask_ly], y_fit_ols_full[mask_ly])[0, 1])
-r_ann_ly    = float(np.corrcoef(y_all[mask_ly], y_fit_ann_full[mask_ly])[0, 1])
 rmse_ols_ly = float(np.sqrt(np.mean((y_all[mask_ly] - y_fit_ols_full[mask_ly])**2)))
-rmse_ann_ly = float(np.sqrt(np.mean((y_all[mask_ly] - y_fit_ann_full[mask_ly])**2)))
 
 all_vals  = np.concatenate([
-    actual_ly, ols_fit_ly, ann_fit_ly,
+    actual_ly, ols_fit_ly,
     fore_ols_3m if len(fore_ols_3m) else np.array([actual_ly[-1]]),
-    fore_ann_3m if len(fore_ann_3m) else np.array([actual_ly[-1]]),
 ])
 y_top_val = float(all_vals.max())
+y_bot_val = float(all_vals.min())
+
+angle_sub = ""
+if natal_angles:
+    angle_sub = "  |  Angles: " + "  ".join(
+        f"{angle_labels[k]}={angle_sign_str(v)}" for k, v in natal_angles.items()
+    )
 
 fig1, ax = plt.subplots(figsize=(18, 6), facecolor=BG)
 ax.set_facecolor("#0D0D28")
@@ -782,10 +643,8 @@ for sp in ax.spines.values(): sp.set_color(GREY)
 ax.tick_params(colors=WHITE, labelsize=8)
 
 ax.plot(dates_ly, actual_ly,  color=TEAL,   lw=2.5, zorder=6, label=f"Actual {stock_name}")
-ax.plot(dates_ly, ols_fit_ly, color=ORANGE, lw=1.4, alpha=0.85, zorder=4,
-        label=f"OLS fitted  r={r_ols_ly:.3f}  RMSE(log)={rmse_ols_ly:.4f}  (rebased)")
-ax.plot(dates_ly, ann_fit_ly, color=PURPLE, lw=1.4, alpha=0.85, zorder=4,
-        label=f"ANN fitted  r={r_ann_ly:.3f}  RMSE(log)={rmse_ann_ly:.4f}  (rebased)")
+ax.plot(dates_ly, ols_fit_ly, color=ORANGE, lw=1.6, alpha=0.85, zorder=4,
+        label=f"OLS fitted  r={r_ols_ly:.3f}  RMSE(log)={rmse_ols_ly:.4f}  (rebased to window start)")
 
 if len(fore_dates_3m):
     ax.axvline(dates_ly[-1], color=GOLD, lw=1.5, ls=":", alpha=0.9, zorder=5)
@@ -793,28 +652,17 @@ if len(fore_dates_3m):
             color=GOLD, fontsize=8, va="bottom", fontweight="bold")
     ax.axvspan(fore_dates_3m[0], fore_dates_3m[-1], alpha=0.06, color=GOLD, zorder=1)
 
-    # Connectors from rebased fitted end to forecast start (anchored at last_actual)
+    # Connector from rebased end to forecast start
     ax.plot([dates_ly[-1], fore_dates_3m[0]], [float(ols_fit_ly[-1]), fore_ols_3m[0]],
             color=ORANGE, lw=1.2, alpha=0.7, zorder=4)
-    ax.plot(fore_dates_3m, fore_ols_3m, color=ORANGE, lw=2.0, ls="--", zorder=5,
+    ax.plot(fore_dates_3m, fore_ols_3m, color=ORANGE, lw=2.2, ls="--", zorder=5,
             label=(f"OLS 3M  end={fore_ols_3m[-1]:,.4f}  "
-                   f"({(fore_ols_3m[-1]/last_fit_ols-1)*100:+.1f}% vs fitted)"))
+                   f"({(fore_ols_3m[-1]/last_fit_ols-1)*100:+.1f}% vs last fitted)"))
     ax.scatter([fore_dates_3m[-1]], [fore_ols_3m[-1]], color=ORANGE, s=60, zorder=8)
     ax.annotate(f"{fore_ols_3m[-1]:,.4f}",
                 xy=(fore_dates_3m[-1], fore_ols_3m[-1]),
                 xytext=(8, 4), textcoords="offset points",
-                color=ORANGE, fontsize=8, fontweight="bold")
-
-    ax.plot([dates_ly[-1], fore_dates_3m[0]], [float(ann_fit_ly[-1]), fore_ann_3m[0]],
-            color=PURPLE, lw=1.2, alpha=0.7, zorder=4)
-    ax.plot(fore_dates_3m, fore_ann_3m, color=PURPLE, lw=2.0, ls="--", zorder=5,
-            label=(f"ANN 3M  end={fore_ann_3m[-1]:,.4f}  "
-                   f"({(fore_ann_3m[-1]/last_fit_ann-1)*100:+.1f}% vs fitted)"))
-    ax.scatter([fore_dates_3m[-1]], [fore_ann_3m[-1]], color=PURPLE, s=60, zorder=8)
-    ax.annotate(f"{fore_ann_3m[-1]:,.4f}",
-                xy=(fore_dates_3m[-1], fore_ann_3m[-1]),
-                xytext=(8, -14), textcoords="offset points",
-                color=PURPLE, fontsize=8, fontweight="bold")
+                color=ORANGE, fontsize=8.5, fontweight="bold")
 
 ax.scatter([dates_ly[-1]], [last_actual], color=TEAL, s=70, zorder=8,
            label=f"Last actual: {last_actual:,.4f}")
@@ -823,18 +671,13 @@ ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
 plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right", fontsize=8)
 ax.set_ylabel("Price Level", color=WHITE, fontsize=10)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.4f}"))
-angle_sub = ""
-if natal_angles:
-    angle_sub = "  |  Angles: " + "  ".join(
-        f"{angle_labels[k]}={angle_sign_str(v)}" for k, v in natal_angles.items()
-    )
 ax.set_title(
-    f"{stock_name} ({ticker}) — Last 12M Fitted + 3M Forecast  (OLS & ANN)\n"
+    f"{stock_name} ({ticker}) — Last 12M Fitted + 3M OLS Forecast\n"
     f"Natal: {natal_date.date()}  ·  Fitted rebased to window-start price  ·  "
     f"Features: {n_features}  ·  Orb: apply≤{orb_apply}°/sep≤{orb_sep}°{angle_sub}",
     color=GOLD, fontsize=11, fontweight="bold",
 )
-ax.legend(fontsize=8, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left")
+ax.legend(fontsize=8.5, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left")
 fig1.tight_layout()
 st.image(fig_to_buf(fig1), use_container_width=True)
 plt.close(fig1)
@@ -844,34 +687,30 @@ plt.close(fig1)
 #  CHART 2 — 90-Day Forecast with Peaks & Troughs
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
-st.markdown("<h2>🔍 Chart 2 — 90-Day Forecast (Peaks &amp; Troughs)</h2>", unsafe_allow_html=True)
+st.markdown("<h2>🔍 Chart 2 — 90-Day OLS Forecast (Peaks &amp; Troughs)</h2>", unsafe_allow_html=True)
 
 FORECAST_DAYS = 90
 fore_dates_90 = fut_dates[:FORECAST_DAYS]
 fore_ols_90   = fore_ols_idx[:FORECAST_DAYS]
-fore_ann_90   = fore_ann_idx[:FORECAST_DAYS]
-fore_avg_90   = (fore_ols_90 + fore_ann_90) / 2.0
 
 last_6m_start = dates_all[-1] - pd.DateOffset(months=6)
 mask_6m       = dates_all >= last_6m_start
 dates_6m      = dates_all[mask_6m]
 actual_6m     = close_all[mask_6m]
 fit_ols_6m    = fit_ols_all[mask_6m]
-fit_ann_6m    = fit_ann_all[mask_6m]
+r_ols_6m      = float(np.corrcoef(y_all[mask_6m], y_fit_ols_full[mask_6m])[0, 1])
 
-r_ols_6m = float(np.corrcoef(y_all[mask_6m], y_fit_ols_full[mask_6m])[0, 1])
-r_ann_6m = float(np.corrcoef(y_all[mask_6m], y_fit_ann_full[mask_6m])[0, 1])
-
+# Find local peaks and troughs in the 90-day forecast
 peak_idx, trough_idx = [], []
-if len(fore_avg_90) >= 7:
+if len(fore_ols_90) >= 7:
     W_pt = 3
-    for i in range(W_pt, len(fore_avg_90) - W_pt):
-        w = fore_avg_90[i - W_pt:i + W_pt + 1]
-        if fore_avg_90[i] == w.max() and fore_avg_90[i] > fore_avg_90[i-1] and fore_avg_90[i] > fore_avg_90[i+1]:
+    for i in range(W_pt, len(fore_ols_90) - W_pt):
+        w = fore_ols_90[i - W_pt:i + W_pt + 1]
+        if fore_ols_90[i] == w.max() and fore_ols_90[i] > fore_ols_90[i-1] and fore_ols_90[i] > fore_ols_90[i+1]:
             peak_idx.append(i)
-        if fore_avg_90[i] == w.min() and fore_avg_90[i] < fore_avg_90[i-1] and fore_avg_90[i] < fore_avg_90[i+1]:
+        if fore_ols_90[i] == w.min() and fore_ols_90[i] < fore_ols_90[i-1] and fore_ols_90[i] < fore_ols_90[i+1]:
             trough_idx.append(i)
-    ai = int(np.argmax(fore_avg_90)); ni = int(np.argmin(fore_avg_90))
+    ai = int(np.argmax(fore_ols_90)); ni = int(np.argmin(fore_ols_90))
     if ai not in peak_idx:   peak_idx.append(ai)
     if ni not in trough_idx: trough_idx.append(ni)
     peak_idx   = sorted(set(peak_idx))
@@ -882,50 +721,40 @@ ax.set_facecolor("#0D0D28")
 for sp in ax.spines.values(): sp.set_color(GREY)
 ax.tick_params(colors=WHITE, labelsize=8.5)
 
-ax.plot(dates_6m, actual_6m, color=TEAL,   lw=2.5, zorder=6, label=f"Actual {stock_name} (6M)")
+ax.plot(dates_6m, actual_6m,  color=TEAL,   lw=2.5, zorder=6, label=f"Actual {stock_name} (6M)")
 ax.plot(dates_6m, fit_ols_6m, color=ORANGE, lw=1.4, alpha=0.80, zorder=4,
         label=f"OLS fitted  r={r_ols_6m:.3f}")
-ax.plot(dates_6m, fit_ann_6m, color=PURPLE, lw=1.4, alpha=0.80, zorder=4,
-        label=f"ANN fitted  r={r_ann_6m:.3f}")
 
 if len(fore_dates_90):
     ax.axvline(fore_dates_90[0], color=GOLD, lw=2.0, ls=":", alpha=0.95, zorder=5)
     ax.axvspan(fore_dates_90[0], fore_dates_90[-1], alpha=0.07, color=GOLD, zorder=1)
-
     ax.plot([dates_6m[-1], fore_dates_90[0]], [last_fit_ols, fore_ols_90[0]],
             color=ORANGE, lw=1.2, alpha=0.7, zorder=4)
-    ax.plot([dates_6m[-1], fore_dates_90[0]], [last_fit_ann, fore_ann_90[0]],
-            color=PURPLE, lw=1.2, alpha=0.7, zorder=4)
-
-    ax.plot(fore_dates_90, fore_ols_90, color=ORANGE, lw=2.2, ls="--", zorder=5,
+    ax.plot(fore_dates_90, fore_ols_90, color=ORANGE, lw=2.4, ls="--", zorder=5,
             label=(f"OLS 90d  end={fore_ols_90[-1]:,.4f}  "
                    f"({(fore_ols_90[-1]/last_fit_ols-1)*100:+.2f}%)"))
-    ax.plot(fore_dates_90, fore_ann_90, color=PURPLE, lw=2.2, ls="--", zorder=5,
-            label=(f"ANN 90d  end={fore_ann_90[-1]:,.4f}  "
-                   f"({(fore_ann_90[-1]/last_fit_ann-1)*100:+.2f}%)"))
 
-    all_y = np.concatenate([actual_6m, fit_ols_6m, fit_ann_6m,
-                             fore_ols_90, fore_ann_90])
-    y_min_ax = all_y.min() * 0.993; y_max_ax = all_y.max() * 1.012
-    lyt = y_max_ax * 0.9985; lyb = y_min_ax * 1.0015
+    all_y    = np.concatenate([actual_6m, fit_ols_6m, fore_ols_90])
+    y_min_ax = all_y.min() * 0.993
+    y_max_ax = all_y.max() * 1.012
+    lyt      = y_max_ax * 0.9985
+    lyb      = y_min_ax * 1.0015
 
     for i in peak_idx:
-        d = fore_dates_90[i]
-        ov = fore_ols_90[i]; av = fore_ann_90[i]
+        d = fore_dates_90[i]; v = fore_ols_90[i]
         ax.axvline(d, color="#FF4466", lw=1.3, ls="--", alpha=0.85, zorder=6)
-        ax.scatter([d, d], [ov, av], color="#FF4466", s=55, zorder=8, marker="^")
-        ax.text(d, lyt, f"  ▲ {d.strftime('%b %d')}\n  OLS {ov:,.2f}\n  ANN {av:,.2f}",
-                color="#FF8899", fontsize=7, va="top", fontweight="bold",
+        ax.scatter([d], [v], color="#FF4466", s=60, zorder=8, marker="^")
+        ax.text(d, lyt, f"  ▲ {d.strftime('%b %d')}\n  {v:,.2f}",
+                color="#FF8899", fontsize=7.5, va="top", fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#1a0010",
                           edgecolor="#FF4466", alpha=0.85))
 
     for i in trough_idx:
-        d = fore_dates_90[i]
-        ov = fore_ols_90[i]; av = fore_ann_90[i]
+        d = fore_dates_90[i]; v = fore_ols_90[i]
         ax.axvline(d, color="#44FF88", lw=1.3, ls="--", alpha=0.85, zorder=6)
-        ax.scatter([d, d], [ov, av], color="#44FF88", s=55, zorder=8, marker="v")
-        ax.text(d, lyb, f"  ▼ {d.strftime('%b %d')}\n  OLS {ov:,.2f}\n  ANN {av:,.2f}",
-                color="#88FFAA", fontsize=7, va="bottom", fontweight="bold",
+        ax.scatter([d], [v], color="#44FF88", s=60, zorder=8, marker="v")
+        ax.text(d, lyb, f"  ▼ {d.strftime('%b %d')}\n  {v:,.2f}",
+                color="#88FFAA", fontsize=7.5, va="bottom", fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#001a0a",
                           edgecolor="#44FF88", alpha=0.85))
 
@@ -941,12 +770,11 @@ ax.yaxis.grid(True, color=GREY, alpha=0.25, lw=0.5)
 ax.set_ylabel("Price Level", color=WHITE, fontsize=10)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.4f}"))
 ax.set_title(
-    f"{stock_name} ({ticker}) — 90-Day OLS & ANN Forecast  (peaks & troughs)\n"
-    f"▲Red=Peak (avg OLS+ANN)  ▼Green=Trough  ·  "
-    f"Natal: {natal_date.date()}  ·  Features: {n_features}{angle_sub}",
+    f"{stock_name} ({ticker}) — 90-Day OLS Forecast  (peaks & troughs)\n"
+    f"▲Red=Peak  ▼Green=Trough  ·  Natal: {natal_date.date()}  ·  Features: {n_features}{angle_sub}",
     color=GOLD, fontsize=11, fontweight="bold",
 )
-ax.legend(fontsize=9, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left", ncol=2)
+ax.legend(fontsize=9, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left")
 fig2.tight_layout(pad=2.0)
 st.image(fig_to_buf(fig2), use_container_width=True)
 plt.close(fig2)
@@ -986,7 +814,8 @@ for idx, col, marker, label_s in [
     dy = v * 1.003 if marker == "^" else v * 0.997
     ax.annotate(
         f"  {label_s}\n  {d.strftime('%b %d, %Y')}\n  {v:,.4f}",
-        xy=(d, v), xytext=(d, dy), color="#FF8899" if marker == "^" else "#88FFAA",
+        xy=(d, v), xytext=(d, dy),
+        color="#FF8899" if marker == "^" else "#88FFAA",
         fontsize=8.5, va=va, fontweight="bold",
         bbox=dict(boxstyle="round,pad=0.3",
                   facecolor="#1a0010" if marker == "^" else "#001a0a",
@@ -1000,11 +829,10 @@ ax.xaxis.grid(True, which="major", color=GREY, alpha=0.40, lw=0.7)
 ax.yaxis.grid(True, color=GREY, alpha=0.25, lw=0.5)
 ax.set_ylabel("Price Level (OLS)", color=WHITE, fontsize=10)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.4f}"))
-chg3 = (fore_ols_idx[-1] / last_actual - 1) * 100
 ax.set_title(
     f"{stock_name} ({ticker}) — OLS Forecast  "
     f"{fut_dates[0].strftime('%b %d, %Y')} → {fut_dates[-1].strftime('%b %d, %Y')}\n"
-    f"End: {fore_ols_idx[-1]:,.4f}  ({chg3:+.2f}% vs last actual)  ·  "
+    f"End: {fore_ols_idx[-1]:,.4f}  ({chg_fore:+.2f}% vs last actual)  ·  "
     f"Natal: {natal_date.date()}  ·  Features: {n_features}",
     color=GOLD, fontsize=11, fontweight="bold",
 )
@@ -1012,69 +840,6 @@ ax.legend(fontsize=9, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left", n
 fig3.tight_layout(pad=2.0)
 st.image(fig_to_buf(fig3), use_container_width=True)
 plt.close(fig3)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CHART 4 — ANN Full-Period Forecast
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("---")
-st.markdown("<h2>🧠 Chart 4 — ANN Full-Period Forecast</h2>", unsafe_allow_html=True)
-
-fig4, ax = plt.subplots(figsize=(20, 7), facecolor=BG)
-ax.set_facecolor("#0D0D28")
-for sp in ax.spines.values(): sp.set_color(GREY)
-ax.tick_params(colors=WHITE, labelsize=8.5)
-
-ax.fill_between(fut_dates, last_actual, fore_ann_idx,
-                where=(fore_ann_idx >= last_actual),
-                color="#00AA55", alpha=0.18, zorder=2, label="Cumulative gain")
-ax.fill_between(fut_dates, last_actual, fore_ann_idx,
-                where=(fore_ann_idx < last_actual),
-                color="#FF3355", alpha=0.18, zorder=2, label="Cumulative loss")
-ax.axhline(last_actual, color=GOLD, lw=1.2, ls=":", alpha=0.8, zorder=3,
-           label=f"Last actual: {last_actual:,.4f}")
-ax.plot(fut_dates, fore_ann_idx, color=PURPLE, lw=2.5, zorder=5,
-        label=f"ANN forecast  {ann_layers}")
-
-peak_ann   = int(np.argmax(fore_ann_idx))
-trough_ann = int(np.argmin(fore_ann_idx))
-for idx, col, marker, label_s in [
-    (peak_ann,   "#FF4466", "^", "Peak"),
-    (trough_ann, "#44FF88", "v", "Trough"),
-]:
-    d = fut_dates[idx]; v = fore_ann_idx[idx]
-    ax.scatter([d], [v], color=col, s=100, zorder=9, marker=marker)
-    ax.axvline(d, color=col, lw=1.0, ls="--", alpha=0.6, zorder=4)
-    va = "bottom" if marker == "^" else "top"
-    dy = v * 1.003 if marker == "^" else v * 0.997
-    ax.annotate(
-        f"  {label_s}\n  {d.strftime('%b %d, %Y')}\n  {v:,.4f}",
-        xy=(d, v), xytext=(d, dy), color="#FF8899" if marker == "^" else "#88FFAA",
-        fontsize=8.5, va=va, fontweight="bold",
-        bbox=dict(boxstyle="round,pad=0.3",
-                  facecolor="#1a0010" if marker == "^" else "#001a0a",
-                  edgecolor=col, alpha=0.9),
-    )
-
-ax.xaxis.set_major_locator(mdates.MonthLocator())
-ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right", fontsize=8.5)
-ax.xaxis.grid(True, which="major", color=GREY, alpha=0.40, lw=0.7)
-ax.yaxis.grid(True, color=GREY, alpha=0.25, lw=0.5)
-ax.set_ylabel("Price Level (ANN)", color=WHITE, fontsize=10)
-ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.4f}"))
-chg4 = (fore_ann_idx[-1] / last_actual - 1) * 100
-ax.set_title(
-    f"{stock_name} ({ticker}) — ANN Forecast  "
-    f"{fut_dates[0].strftime('%b %d, %Y')} → {fut_dates[-1].strftime('%b %d, %Y')}\n"
-    f"End: {fore_ann_idx[-1]:,.4f}  ({chg4:+.2f}% vs last actual)  ·  "
-    f"ANN {ann_layers}  ·  Natal: {natal_date.date()}  ·  Features: {n_features}",
-    color=GOLD, fontsize=11, fontweight="bold",
-)
-ax.legend(fontsize=9, facecolor="#1A1A38", labelcolor=WHITE, loc="upper left", ncol=2)
-fig4.tight_layout(pad=2.0)
-st.image(fig_to_buf(fig4), use_container_width=True)
-plt.close(fig4)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1095,9 +860,8 @@ with st.spinner("Computing active transit-to-natal aspects …"):
         start=last_date + pd.Timedelta(days=1), end=window_end, freq="B"
     )
     all_win_d = past_dates_w.append(fut_dates_w)
-
-    eph_win  = eph.reindex(all_win_d, method="ffill")
-    avail_tp = [p for p in ALL_PLANETS if p in eph_win.columns]
+    eph_win   = eph.reindex(all_win_d, method="ffill")
+    avail_tp  = [p for p in ALL_PLANETS if p in eph_win.columns]
 
     rows = []
     for tp in avail_tp:
@@ -1135,13 +899,12 @@ with st.spinner("Computing active transit-to-natal aspects …"):
 
     asp_table = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
 
-# Daily net effect
 if len(asp_table):
+    # Daily net effect
     daily_net = (
         asp_table.groupby(["Date", "Period"])
         .agg(N_Aspects=("OLS Coef", "count"), Net_Coef=("OLS Coef", "sum"))
-        .reset_index()
-        .sort_values("Date")
+        .reset_index().sort_values("Date")
     )
     daily_net["Net Effect %"] = (daily_net["Net_Coef"] * 100).round(3)
     daily_net["Bias"] = daily_net["Net_Coef"].apply(
@@ -1170,14 +933,12 @@ if len(asp_table):
             st.dataframe(style_aspect_df(past_asp), use_container_width=True, height=400)
         else:
             st.info("No active aspects in the last 7 trading days.")
-
     with tab2:
         st.markdown(f"**{len(fut_asp)} active aspect-days**")
         if len(fut_asp):
             st.dataframe(style_aspect_df(fut_asp), use_container_width=True, height=400)
         else:
             st.info("No active aspects in the next 30 days.")
-
     with tab3:
         def style_net(df):
             def row_color(row):
@@ -1188,7 +949,7 @@ if len(asp_table):
             return df.style.apply(row_color, axis=1).format({
                 "Net_Coef": "{:+.6f}", "Net Effect %": "{:+.3f}"
             })
-        st.markdown(f"**Daily net planetary effect (sum of active OLS coefs)**")
+        st.markdown("**Daily net planetary effect (sum of active OLS coefs)**")
         st.dataframe(style_net(daily_net), use_container_width=True)
 else:
     st.info("No active aspects found in the window.")
@@ -1207,33 +968,25 @@ def dir_arrow(chg):
 
 hist_rows = []
 for pos in range(max(0, n_total - 10), n_total):
-    d          = dates_all[pos]
-    close_val  = float(price_df.loc[d, "Close"])
-    prev       = float(price_df.iloc[pos - 1]["Close"]) if pos > 0 else float("nan")
-    price_chg  = close_val - prev
-    price_pct  = price_chg / prev * 100 if (not np.isnan(prev) and prev != 0) else float("nan")
-    price_dir  = dir_arrow(price_chg)
-    ols_t      = fit_ols_all[pos]
-    ols_tm1    = fit_ols_all[pos - 1] if pos > 0 else float("nan")
-    ols_chg    = ols_t - ols_tm1
-    ols_pct    = ols_chg / ols_tm1 * 100 if (not np.isnan(ols_tm1) and ols_tm1 != 0) else float("nan")
-    ols_dir    = dir_arrow(ols_chg)
-    ann_t      = fit_ann_all[pos]
-    ann_tm1    = fit_ann_all[pos - 1] if pos > 0 else float("nan")
-    ann_chg    = ann_t - ann_tm1
-    ann_pct    = ann_chg / ann_tm1 * 100 if (not np.isnan(ann_tm1) and ann_tm1 != 0) else float("nan")
-    ann_dir    = dir_arrow(ann_chg)
+    d         = dates_all[pos]
+    close_val = float(price_df.loc[d, "Close"])
+    prev      = float(price_df.iloc[pos - 1]["Close"]) if pos > 0 else float("nan")
+    price_chg = close_val - prev
+    price_pct = price_chg / prev * 100 if (not np.isnan(prev) and prev != 0) else float("nan")
+    price_dir = dir_arrow(price_chg)
+    ols_t     = fit_ols_all[pos]
+    ols_tm1   = fit_ols_all[pos - 1] if pos > 0 else float("nan")
+    ols_chg   = ols_t - ols_tm1
+    ols_pct   = ols_chg / ols_tm1 * 100 if (not np.isnan(ols_tm1) and ols_tm1 != 0) else float("nan")
+    ols_dir   = dir_arrow(ols_chg)
     hist_rows.append({
         "Date":       str(d.date()),
         "Close":      round(close_val, 4),
         "Actual %":   round(price_pct, 2) if not np.isnan(price_pct) else None,
         "Actual Dir": price_dir,
-        "OLS %":      round(ols_pct, 3)  if not np.isnan(ols_pct)   else None,
+        "OLS %":      round(ols_pct, 3)   if not np.isnan(ols_pct)   else None,
         "OLS Dir":    ols_dir,
-        "OLS ✓":      "✓" if ols_dir.strip() == price_dir.strip() else "✗",
-        "ANN %":      round(ann_pct, 3)  if not np.isnan(ann_pct)   else None,
-        "ANN Dir":    ann_dir,
-        "ANN ✓":      "✓" if ann_dir.strip() == price_dir.strip() else "✗",
+        "Match":      "✓" if ols_dir.strip() == price_dir.strip() else "✗",
     })
 
 hist_df = pd.DataFrame(hist_rows)
@@ -1244,16 +997,14 @@ def style_hist(df):
         bg = "#0d0d28"
         for col in df.columns:
             val = row[col]
-            if col in ("OLS ✓", "ANN ✓"):
+            if col == "Match":
                 c = "#44DD88" if val == "✓" else "#FF4466"
                 styles.append(f"color:{c};background-color:{bg};font-weight:700")
-            elif col in ("OLS Dir", "ANN Dir", "Actual Dir"):
+            elif col in ("OLS Dir", "Actual Dir"):
                 c = "#44DD88" if "UP" in str(val) else ("#FF4466" if "DOWN" in str(val) else "#888")
                 styles.append(f"color:{c};background-color:{bg}")
             elif col == "OLS %":
                 styles.append(f"color:{ORANGE};background-color:{bg}")
-            elif col == "ANN %":
-                styles.append(f"color:#CC44FF;background-color:{bg}")
             else:
                 styles.append(f"background-color:{bg};color:#E8E8F4")
         return styles
@@ -1261,12 +1012,12 @@ def style_hist(df):
 
 st.dataframe(style_hist(hist_df), use_container_width=True)
 
-ols_hits = sum(1 for r in hist_rows if r["OLS ✓"] == "✓")
-ann_hits = sum(1 for r in hist_rows if r["ANN ✓"] == "✓")
+ols_hits = sum(1 for r in hist_rows if r["Match"] == "✓")
 n_h      = len(hist_rows)
-c1, c2   = st.columns(2)
-c1.markdown(metric_html("OLS Hit Rate (last 10d)", f"{ols_hits}/{n_h}", f"{ols_hits/n_h*100:.0f}%"), unsafe_allow_html=True)
-c2.markdown(metric_html("ANN Hit Rate (last 10d)", f"{ann_hits}/{n_h}", f"{ann_hits/n_h*100:.0f}%"), unsafe_allow_html=True)
+st.markdown(
+    metric_html("OLS Hit Rate (last 10d)", f"{ols_hits}/{n_h}", f"{ols_hits/n_h*100:.0f}%"),
+    unsafe_allow_html=True,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1276,22 +1027,18 @@ st.markdown("---")
 st.markdown("<h2>💾 Download Results</h2>", unsafe_allow_html=True)
 
 fitted_df = pd.DataFrame({
-    "date":           dates_all,
-    "actual_close":   close_all,
-    "actual_logprice":y_all,
-    "ols_fitted_log": y_fit_ols_full,
-    "ann_fitted_log": y_fit_ann_full,
-    "ols_fitted_idx": fit_ols_all,
-    "ann_fitted_idx": fit_ann_all,
-    "split":          (["train"] * n_train + ["test"] * (n_total - n_train)),
+    "date":            dates_all,
+    "actual_close":    close_all,
+    "actual_logprice": y_all,
+    "ols_fitted_log":  y_fit_ols_full,
+    "ols_fitted_idx":  fit_ols_all,
+    "split":           (["train"] * n_train + ["test"] * (n_total - n_train)),
 })
 
 forecast_df = pd.DataFrame({
-    "date":            fut_dates,
-    "ols_forecast_log":y_fore_ols,
-    "ann_forecast_log":y_fore_ann,
-    "ols_forecast_idx":fore_ols_idx,
-    "ann_forecast_idx":fore_ann_idx,
+    "date":             fut_dates,
+    "ols_forecast_log": y_fore_ols,
+    "ols_forecast_idx": fore_ols_idx,
 })
 
 natal_df = pd.DataFrame([
@@ -1332,10 +1079,9 @@ st.download_button(
 st.markdown(
     f"<hr class='gold'/>"
     f"<p style='text-align:center;color:#555;font-size:11px;letter-spacing:1px'>"
-    f"NATAL PLANETARY REGRESSION · {stock_name} ({ticker}) · "
+    f"NATAL PLANETARY REGRESSION (OLS) · {stock_name} ({ticker}) · "
     f"Natal: {natal_date.date()} · "
-    f"OLS R²={ols_full_r2:.4f} · ANN R²={ann_full_r2:.4f} · "
-    f"Features: {n_features} · Apply≤{orb_apply}° Sep≤{orb_sep}° · "
-    f"ANN {ann_layers}</p>",
+    f"OLS Full R²={ols_full_r2:.4f} · Train R²={m_train['r2']:.4f} · Test R²={m_test['r2']:.4f} · "
+    f"Features: {n_features} · Apply≤{orb_apply}° Sep≤{orb_sep}°</p>",
     unsafe_allow_html=True,
 )
